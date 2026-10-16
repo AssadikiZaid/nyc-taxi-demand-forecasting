@@ -1,0 +1,93 @@
+[project]
+name = "taxi-forecast"
+version = "0.1.0"
+description = "Hourly taxi demand forecasting by New York City zone, with quantile forecasts and an end-to-end MLOps pipeline."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Zaid Assadiki" }]
+requires-python = ">=3.12,<3.13"
+# Core dependencies are shared by every component, including the serving image.
+dependencies = [
+    "holidays>=0.80",
+    "numpy>=2.4",
+    "pandas>=3.0",
+    "pyarrow>=21",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Ingestion and PySpark aggregation (phase 1).
+spark = [
+    "pyspark>=4.2",
+    "requests>=2.32",
+]
+# Classical models, tuning, experiment tracking and drift monitoring (phases 3 to 5 and 8).
+models = [
+    "evidently>=0.7",
+    "lightgbm>=4.6",
+    "mlflow>=3.0",
+    "optuna>=5.0",
+    "prophet>=1.1",
+]
+# Deep learning model (TFT through Darts, phase 5). Darts only installs PyTorch through its
+# "torch" extra, which is large, so this group stays optional. The CPU or GPU build of
+# PyTorch will be chosen in phase 5.
+dl = [
+    "darts[torch]>=0.48",
+]
+# Everything the FastAPI service needs at runtime, and nothing else (phase 6).
+serve = [
+    "fastapi>=0.115",
+    "lightgbm>=4.6",
+    "uvicorn>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0",
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "ruff>=0.15",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/taxi_forecast"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # import sorting
+    "B",   # bugbear: likely bugs
+    "UP",  # modern Python syntax
+    "SIM", # simplifications
+    "N",   # naming conventions
+    "D",   # docstrings
+    "PT",  # pytest style
+    "RUF", # ruff-specific rules
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "spark: tests that start a local Spark session (slower)",
+]

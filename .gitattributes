@@ -1,0 +1,5 @@
+# Keep Unix line endings everywhere, so scripts and the Makefile work in WSL2 even if
+# a file is edited from Windows.
+* text=auto eol=lf
+*.parquet binary
+*.png binary

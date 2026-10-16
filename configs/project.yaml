@@ -1,0 +1,28 @@
+# Central project configuration.
+# Values marked "proposal" are not final yet; the phase that fixes them is given in brackets.
+
+data:
+  start_month: "2023-01"   # proposal [phase 1]: at least two years to capture yearly seasonality
+  end_month: "2026-08"     # latest yellow-taxi month published by the TLC on 2026-10-16
+  timezone: "America/New_York"
+  tlc_url_template: "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{year}-{month:02d}.parquet"
+  zone_lookup_url: "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
+  excluded_zone_ids: [264, 265]  # "Unknown" and "Outside of NYC"
+
+weather:
+  provider: "open-meteo"
+  latitude: 40.78    # Central Park
+  longitude: -73.97
+  hourly_variables:
+    - temperature_2m
+    - precipitation
+    - rain
+    - snowfall
+    - wind_speed_10m
+    - weather_code
+
+forecast:
+  horizon_hours: 24
+  origin_hour_local: 0   # one forecast issued every day at midnight, New York time
+  quantiles: [0.1, 0.5, 0.9]
+  top_n_zones: 50        # proposal [phase 2]: fixed after the EDA

@@ -1,0 +1,44 @@
+# Data and generated artifacts (never committed)
+data/
+mlruns/
+mlartifacts/
+mlflow.db
+reports/
+logs/
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Secrets: keys, tokens and service-account files must never reach the repository
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*service-account*.json
+*credentials*.json
+gcp-key*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
