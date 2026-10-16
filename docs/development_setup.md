@@ -5,14 +5,20 @@ step 1 and install the same tools with your package manager.
 
 ## 1. Install WSL2 and Ubuntu (Windows only)
 
+The Linux disk of the distribution grows with the data, the environments and the Docker
+images (expect 15 to 20 GB over the project). If the system drive `C:` is short on space,
+install the distribution on another drive with `--location`.
+
 In PowerShell **run as administrator**:
 
 ```powershell
-wsl --install -d Ubuntu-24.04
+wsl --install --no-distribution   # installs WSL itself; restart if asked
+wsl --update
+wsl --install -d Ubuntu-24.04 --location D:\WSL\Ubuntu-24.04
 ```
 
-Restart when asked, then open "Ubuntu" from the Start menu and create a Linux user.
-Check that the distribution runs on WSL 2:
+Drop `--location ...` to keep the default location on `C:`. When Ubuntu opens, create a
+Linux user and password. Check that the distribution runs on WSL 2:
 
 ```powershell
 wsl -l -v
@@ -21,14 +27,19 @@ wsl -l -v
 Work inside the Linux file system (for example `~/projects`), not under `/mnt/c/...`:
 file access across the Windows boundary is much slower, which matters for Spark.
 
-To give WSL2 more memory (Spark likes it), create `C:\Users\<you>\.wslconfig`:
+By default WSL2 gets half of the machine's RAM. To change it, create
+`C:\Users\<you>\.wslconfig`:
 
 ```ini
 [wsl2]
-memory=8GB
+memory=5GB   # about 60 % of the RAM: 5GB on an 8 GB machine, 7GB on a 12 GB machine
 ```
 
-Pick a value around half of your RAM, then run `wsl --shutdown` and reopen Ubuntu.
+Then run `wsl --shutdown` and reopen Ubuntu. On an 8 GB machine, the Spark jobs process
+one month at a time to stay within this budget.
+
+The project does not need a local GPU: the TFT model is trained on a free Colab or
+Kaggle GPU (phase 5).
 
 ## 2. System packages and Java
 
