@@ -82,7 +82,7 @@ make setup
 make test
 ```
 
-`make setup` creates `.venv/` with the core and development dependencies, and installs
+`make setup` creates `.venv/` with the core, PySpark and development dependencies, and installs
 the pre-commit hooks: from then on, every `git commit` runs ruff and a few safety checks
 (including one that blocks private keys).
 

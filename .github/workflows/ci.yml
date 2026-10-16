@@ -14,12 +14,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up Java 17 for PySpark
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
 
       - name: Install dependencies from the lockfile
-        run: uv sync --locked
+        run: uv sync --locked --extra spark
 
       - name: Lint
         run: |

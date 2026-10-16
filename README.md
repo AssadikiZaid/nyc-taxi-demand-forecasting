@@ -3,9 +3,9 @@
 Hourly forecasts of yellow-taxi pickups for each New York City taxi zone, 24 hours ahead,
 with P10 / P50 / P90 quantiles.
 
-> **Status: work in progress.** Phase 0 (project setup) is done. No model has been trained
-> yet, so this README reports no results. Every figure added later will come from a tracked,
-> reproducible run.
+> **Status: work in progress.** The data pipeline (phase 1) is being validated on real
+> data. No model has been trained yet, so this README reports no results. Every figure added
+> later will come from a tracked, reproducible run.
 
 ## What the project does
 
@@ -25,7 +25,7 @@ Evidently.
 | Phase | Content | Status |
 | --- | --- | --- |
 | 0 | Project setup: tooling, tests, CI | Done |
-| 1 | Ingestion and PySpark pipeline: complete zone x hour panel | Not started |
+| 1 | Ingestion and PySpark pipeline: complete zone x hour panel | In progress |
 | 2 | Weather and calendar enrichment, exploratory analysis | Not started |
 | 3 | Rolling-origin backtest, metrics, MLflow tracking, seasonal baseline | Not started |
 | 4 | Global LightGBM with lag features and quantile objectives | Not started |
@@ -42,14 +42,35 @@ Requirements: Linux, macOS or WSL2 on Windows, with `git`, `make`, `curl` and
 [docs/development_setup.md](docs/development_setup.md) walks through a fresh WSL2 install.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/AssadikiZaid/nyc-taxi-demand-forecasting.git
 cd nyc-taxi-demand-forecasting
 make doctor   # check the required tools
-make setup    # create the environment (Python 3.12, core + dev tools) and git hooks
+make setup    # create the environment (Python 3.12, PySpark, dev tools) and git hooks
 make test     # run the test suite
 ```
 
 Run `make` with no argument to list every command.
+
+## Data pipeline
+
+```bash
+make pipeline                              # January to March 2025, the development sample
+make pipeline START=2023-01 END=2026-08    # the full period
+```
+
+`make pipeline` runs three steps, which can also be called one by one:
+
+1. `make data` downloads the monthly TLC files and the taxi zone table. Files already on
+   disk are skipped, so the command can be re-run safely.
+2. `make panel` builds, with PySpark, the hourly number of pickups for every taxi zone and
+   every UTC hour, with explicit zeros, in `data/processed/demand_hourly/`. Each month also
+   gets a JSON quality report in `data/quality/`.
+3. `make quality-report` summarizes those reports in
+   [docs/data_quality.md](docs/data_quality.md).
+
+The cleaning rules, the time-zone handling and the checks run on every month are explained
+in [docs/decisions.md](docs/decisions.md) (D-009 to D-012). Data files stay out of git; set
+`TAXI_FORECAST_DATA_DIR` to keep them on another drive.
 
 ## Repository layout
 

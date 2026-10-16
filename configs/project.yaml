@@ -9,6 +9,12 @@ data:
   zone_lookup_url: "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
   excluded_zone_ids: [264, 265]  # "Unknown" and "Outside of NYC"
 
+# Trip-level quality rules (phase 1). Starting values: the quality report counts the trips
+# each rule removes, and the thresholds are revisited if a rule removes too much.
+cleaning:
+  max_duration_hours: 6
+  max_trip_distance_miles: 100
+
 weather:
   provider: "open-meteo"
   latitude: 40.78    # Central Park

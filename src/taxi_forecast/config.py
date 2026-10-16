@@ -15,7 +15,7 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "project.yaml"
 _MONTH_PATTERN = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
 
 
-def _parse_month(value: str) -> tuple[int, int]:
+def parse_month(value: str) -> tuple[int, int]:
     """Parse a ``YYYY-MM`` string into a ``(year, month)`` tuple.
 
     Raises:
@@ -25,6 +25,23 @@ def _parse_month(value: str) -> tuple[int, int]:
     if match is None:
         raise ValueError(f"Expected a month formatted as YYYY-MM, got {value!r}")
     return int(match.group(1)), int(match.group(2))
+
+
+def month_range(start: str, end: str) -> list[tuple[int, int]]:
+    """Return every ``(year, month)`` from ``start`` to ``end`` (``YYYY-MM``), both included.
+
+    Raises:
+        ValueError: If a month is malformed or ``start`` is after ``end``.
+    """
+    year, month = parse_month(start)
+    last = parse_month(end)
+    if (year, month) > last:
+        raise ValueError(f"start month {start} is after end month {end}")
+    months = []
+    while (year, month) <= last:
+        months.append((year, month))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
 
 
 @dataclass(frozen=True)
@@ -40,22 +57,29 @@ class DataConfig:
 
     def __post_init__(self) -> None:
         """Check that the period is well formed and not empty."""
-        if _parse_month(self.start_month) > _parse_month(self.end_month):
+        if parse_month(self.start_month) > parse_month(self.end_month):
             raise ValueError(f"start_month {self.start_month} is after end_month {self.end_month}")
 
     def months(self) -> list[tuple[int, int]]:
         """Return every ``(year, month)`` of the period, both ends included, in order."""
-        year, month = _parse_month(self.start_month)
-        end = _parse_month(self.end_month)
-        months = []
-        while (year, month) <= end:
-            months.append((year, month))
-            year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-        return months
+        return month_range(self.start_month, self.end_month)
 
     def tlc_url(self, year: int, month: int) -> str:
         """Return the download URL of the TLC yellow-taxi file for one month."""
         return self.tlc_url_template.format(year=year, month=month)
+
+
+@dataclass(frozen=True)
+class CleaningConfig:
+    """Thresholds of the trip-level quality rules."""
+
+    max_duration_hours: float
+    max_trip_distance_miles: float
+
+    def __post_init__(self) -> None:
+        """Check that both thresholds are positive."""
+        if self.max_duration_hours <= 0 or self.max_trip_distance_miles <= 0:
+            raise ValueError("cleaning thresholds must be positive")
 
 
 @dataclass(frozen=True)
@@ -100,6 +124,7 @@ class ProjectConfig:
     """Full project configuration."""
 
     data: DataConfig
+    cleaning: CleaningConfig
     weather: WeatherConfig
     forecast: ForecastConfig
 
@@ -114,6 +139,7 @@ class ProjectConfig:
         forecast["quantiles"] = tuple(forecast["quantiles"])
         return cls(
             data=DataConfig(**data),
+            cleaning=CleaningConfig(**raw["cleaning"]),
             weather=WeatherConfig(**weather),
             forecast=ForecastConfig(**forecast),
         )

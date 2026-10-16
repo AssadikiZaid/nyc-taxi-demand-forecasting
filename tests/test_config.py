@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from taxi_forecast.config import DEFAULT_CONFIG_PATH, ProjectConfig, load_config
+from taxi_forecast.config import DEFAULT_CONFIG_PATH, ProjectConfig, load_config, month_range
 
 
 @pytest.fixture
@@ -69,6 +69,25 @@ def test_period_must_not_be_reversed(raw_config):
     raw_config["data"]["start_month"] = "2026-09"
 
     with pytest.raises(ValueError, match="after end_month"):
+        ProjectConfig.from_dict(raw_config)
+
+
+def test_month_range_crosses_a_year_boundary():
+    assert month_range("2024-11", "2025-02") == [(2024, 11), (2024, 12), (2025, 1), (2025, 2)]
+
+
+def test_month_range_rejects_a_reversed_period():
+    with pytest.raises(ValueError, match="after end month"):
+        month_range("2025-03", "2025-01")
+
+
+def test_cleaning_thresholds_are_loaded_and_must_be_positive(raw_config):
+    config = load_config()
+    assert config.cleaning.max_duration_hours == 6
+    assert config.cleaning.max_trip_distance_miles == 100
+
+    raw_config["cleaning"]["max_duration_hours"] = 0
+    with pytest.raises(ValueError, match="positive"):
         ProjectConfig.from_dict(raw_config)
 
 
