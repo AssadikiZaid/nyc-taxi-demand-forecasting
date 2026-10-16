@@ -81,12 +81,21 @@ def test_month_range_rejects_a_reversed_period():
         month_range("2025-03", "2025-01")
 
 
-def test_cleaning_thresholds_are_loaded_and_must_be_positive(raw_config):
+def test_cleaning_thresholds_are_loaded():
     config = load_config()
+
     assert config.cleaning.max_duration_hours == 6
     assert config.cleaning.max_trip_distance_miles == 100
+    assert config.cleaning.min_ride_seconds == 60
 
-    raw_config["cleaning"]["max_duration_hours"] = 0
+
+THRESHOLDS = ["max_duration_hours", "max_trip_distance_miles", "min_ride_seconds"]
+
+
+@pytest.mark.parametrize("key", THRESHOLDS)
+def test_cleaning_thresholds_must_be_positive(raw_config, key):
+    raw_config["cleaning"][key] = 0
+
     with pytest.raises(ValueError, match="positive"):
         ProjectConfig.from_dict(raw_config)
 

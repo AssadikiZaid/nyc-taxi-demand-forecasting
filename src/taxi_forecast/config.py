@@ -75,10 +75,12 @@ class CleaningConfig:
 
     max_duration_hours: float
     max_trip_distance_miles: float
+    min_ride_seconds: int
 
     def __post_init__(self) -> None:
-        """Check that both thresholds are positive."""
-        if self.max_duration_hours <= 0 or self.max_trip_distance_miles <= 0:
+        """Check that every threshold is positive."""
+        thresholds = (self.max_duration_hours, self.max_trip_distance_miles, self.min_ride_seconds)
+        if min(thresholds) <= 0:
             raise ValueError("cleaning thresholds must be positive")
 
 

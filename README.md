@@ -58,18 +58,22 @@ make pipeline                              # January to March 2025, the developm
 make pipeline START=2023-01 END=2026-08    # the full period
 ```
 
-`make pipeline` runs three steps, which can also be called one by one:
+`make pipeline` runs two steps, which can also be called one by one:
 
 1. `make data` downloads the monthly TLC files and the taxi zone table. Files already on
    disk are skipped, so the command can be re-run safely.
 2. `make panel` builds, with PySpark, the hourly number of pickups for every taxi zone and
    every UTC hour, with explicit zeros, in `data/processed/demand_hourly/`. Each month also
-   gets a JSON quality report in `data/quality/`.
-3. `make quality-report` summarizes those reports in
-   [docs/data_quality.md](docs/data_quality.md).
+   gets a JSON quality report in `data/quality/`. Months already built with the current
+   rules are skipped; `make panel FORCE=1` rebuilds them.
+
+`make quality-report` then summarizes the monthly reports in
+[docs/data_quality.md](docs/data_quality.md).
 
 The cleaning rules, the time-zone handling and the checks run on every month are explained
-in [docs/decisions.md](docs/decisions.md) (D-009 to D-012). Data files stay out of git; set
+in [docs/decisions.md](docs/decisions.md) (D-009 to D-014): the rules were revised after
+checking the real data, which showed one vendor never recording dropoff times and some
+trips appearing twice through reversal records. Data files stay out of git; set
 `TAXI_FORECAST_DATA_DIR` to keep them on another drive.
 
 ## Repository layout

@@ -40,13 +40,17 @@ check: lint test ## Run lint and tests, as the CI does
 data: ## Download the TLC files and the zone table for START..END (default 2025-01..2025-03)
 	$(RUN) python -m taxi_forecast.ingestion.tlc --start $(START) --end $(END)
 
-panel: ## Build the zone x hour demand panel for START..END with PySpark
-	$(RUN) python -m taxi_forecast.pipeline.demand_hourly --start $(START) --end $(END)
+# Months already built from the same raw file with the current rules are skipped;
+# `make panel FORCE=1` rebuilds every month of START..END.
+PANEL_FLAGS := $(if $(FORCE),,--skip-up-to-date)
+
+panel: ## Build the zone x hour demand panel for START..END with PySpark (new months only)
+	$(RUN) python -m taxi_forecast.pipeline.demand_hourly --start $(START) --end $(END) $(PANEL_FLAGS)
 
 quality-report: ## Summarize the monthly quality reports into docs/data_quality.md
 	$(RUN) python -m taxi_forecast.pipeline.quality_report
 
-pipeline: data panel quality-report ## Run download, panel and quality report in one go
+pipeline: data panel ## Download and build the panel for START..END in one go
 
 clean: ## Remove caches and build artifacts (keeps data and the environment)
 	rm -rf .pytest_cache .ruff_cache .coverage htmlcov build dist

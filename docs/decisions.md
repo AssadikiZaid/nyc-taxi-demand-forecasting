@@ -102,15 +102,18 @@ months separately also sidesteps the small schema differences between TLC years.
 
 ## D-011 · Quality rules, counted one by one
 
-**Decision.** Exact duplicate rows are removed first. Each remaining trip is then flagged
-with the first rule it breaks, in this order: pickup outside the file's month, invalid
-zone (missing, unknown, or 264-265), duration of zero or less, duration over 6 hours,
-distance of zero or less (or missing), distance over 100 miles. The counts per rule are
-written to a JSON report per month and summarized in `docs/data_quality.md`.
+**Decision.** The panel counts every pickup that happened, exactly once. Exact duplicate
+rows are removed first. Each remaining trip is then flagged with the first rule it breaks,
+in this order: pickup outside the file's month, invalid zone (missing, unknown, or
+264-265), reversal record, negative duration, duration over 6 hours, no ride (the taxi did
+not move and the meter ran for less than 60 seconds), distance over 100 miles. The counts
+per rule are written to a JSON report per month and summarized in `docs/data_quality.md`.
 
 **Why.** Counting each trip under one rule only makes the counts add up to the number of
-trips removed, so the report can be checked by simple addition. The thresholds are starting
-values in `configs/project.yaml`, revisited once the report shows what each rule removes.
+trips removed, so the report can be checked by simple addition. Thresholds live in
+`configs/project.yaml`. The first version of the rules was replaced after looking at the
+real data (D-013); every report records the `rules_version` that produced it, and reports
+from different versions are never summarized together.
 
 ## D-012 · A complete panel with explicit zeros, checked twice
 
@@ -122,3 +125,40 @@ holds exactly as many pickups as trips kept.
 **Why.** Without explicit zeros, the row "24 rows earlier" is not "24 hours earlier" for
 quiet zones, and every lag feature is silently wrong. The two checks turn that kind of bug
 into an immediate error.
+
+## D-013 · Rules revised after checking January-March 2025 (rules version 2)
+
+**Context.** The first rules (version 1) dropped every trip with a zero distance or a
+duration of zero or less. On the real data of January to March 2025 (11.2 million trips),
+three checks showed that they removed real pickups and kept duplicates:
+
+| Finding | Evidence | Effect of version 1 |
+| --- | --- | --- |
+| Vendor 7 never records the dropoff time | 100 % of its trips have dropoff = pickup, with normal distances and fares; its share grows from 0.03 % (January) to 0.52 % (March) | All its trips dropped: a demand drop that would grow over time and look like a trend |
+| 2.6 % of trips have a zero distance | 60 % of them last over a minute, cost more than zero and are not voided: mostly "flex fare" trips (payment type 0) whose distance is not recorded | Real pickups dropped, unevenly: 2.4 % of trips in a typical top-50 zone, up to 6 % in Harlem |
+| 1.4 % of trips are reversal records | A negative fare whose trip (same vendor, pickup, dropoff and zones) also appears with the opposite fare; payment types are dispute (63 %), cash (24 %) and no charge (13 %) | The same pickup counted twice; JFK and LaGuardia are the most affected zones |
+
+Negative fares alone are not a reliable signal: in March, 3.6 % of trips have a negative
+`fare_amount` and no twin, and 95 % of those are flex-fare trips with a positive total
+(92 % with a real distance).
+
+**Decision (version 2).** Keep a trip whose dropoff equals its pickup when the taxi moved;
+keep a trip with no distance when the meter ran for at least 60 seconds; drop the
+negative-fare twin of a reversed trip; drop only negative durations (dropoff before pickup,
+298 trips in three months).
+
+**Result.** 97.7 % of trips are kept instead of 96.9 %. Over the 50 busiest zones (92 % of
+pickups), the counts change by -4.7 % (JFK, where version 1 counted reversals twice) to
++4.5 % (Central Harlem and Morningside Heights, where it dropped flex-fare trips).
+
+## D-014 · Incremental runs, robust reads
+
+**Decision.** `make panel` skips a month when its quality report was written by the current
+rules version from a raw file of the same size, so a run over the full period only builds
+new or changed months (`make panel FORCE=1` rebuilds everything). A raw file whose
+timestamps are stored in nanoseconds, which Spark cannot read, is converted to
+microseconds in a temporary copy first.
+
+**Why.** The monthly Airflow DAG (phase 8) only needs to process the newly published month,
+and an interrupted run over 44 months can resume where it stopped. A rules change bumps the
+version, which forces a rebuild of every month, so the panel never mixes two versions.

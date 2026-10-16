@@ -4,24 +4,38 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from taxi_forecast.config import load_config
 from taxi_forecast.paths import demand_hourly_dir, quality_report_file, raw_trip_file
-from taxi_forecast.pipeline.demand_hourly import process_month, read_zone_ids, run
+from taxi_forecast.pipeline.demand_hourly import (
+    RULES_VERSION,
+    is_up_to_date,
+    nanosecond_timestamp_columns,
+    process_month,
+    read_zone_ids,
+    run,
+)
 from taxi_forecast.pipeline.quality_report import load_reports, render_markdown
 from tlc_samples import trip, write_trips, write_zone_lookup
 
 pytestmark = pytest.mark.spark
 
 CONFIG = load_config()
-ZONES = [1, 2, 3]
+ZONES = [1, 2, 3, 4]
 
 VALID_JANUARY = [
     trip("2025-01-15 08:30:00", zone=1, fare=10.0),
     trip("2025-01-15 08:45:00", zone=1, fare=11.0),
     trip("2025-01-15 08:59:59", zone=2),
     trip("2025-01-31 23:59:00", zone=1),  # last local hour of the month
+    # Seen in the real data and kept on purpose (docs/decisions.md, D-013):
+    trip("2025-01-20 10:00:00", dropoff="2025-01-20 10:00:00", zone=3),  # no dropoff time
+    trip("2025-01-20 10:30:00", minutes=12, zone=3, distance=0.0),  # distance not recorded
+    trip("2025-01-20 11:00:00", zone=3, fare=-4.75),  # negative fare without a twin
+    trip("2025-01-21 09:00:00", zone=2, fare=27.5),  # original of the reversal below
 ]
 REJECTED_JANUARY = {
     "exact_duplicate": [trip("2025-01-15 08:30:00", zone=1, fare=10.0)],
@@ -33,15 +47,14 @@ REJECTED_JANUARY = {
         trip("2025-01-10 12:00:00", zone=999),
         trip("2025-01-10 12:00:00", zone=264, distance=0.0),  # first broken rule wins
     ],
-    "non_positive_duration": [
-        trip("2025-01-10 12:00:00", dropoff="2025-01-10 12:00:00"),
-        trip("2025-01-10 12:00:00", dropoff="2025-01-10 11:00:00"),
-    ],
+    "reversal_record": [trip("2025-01-21 09:00:00", zone=2, fare=-27.5)],
+    "negative_duration": [trip("2025-01-10 12:00:00", dropoff="2025-01-10 11:00:00")],
     "duration_too_long": [trip("2025-01-10 12:00:00", minutes=7 * 60)],
-    "non_positive_distance": [
-        trip("2025-01-10 12:00:00", distance=0.0),
-        trip("2025-01-10 12:00:00", distance=None),
-        trip("2025-01-10 12:00:00", distance=math.nan),
+    "no_ride": [
+        trip("2025-01-10 12:00:00", minutes=0.5, distance=0.0),
+        trip("2025-01-10 12:00:00", dropoff="2025-01-10 12:00:00", distance=0.0),
+        trip("2025-01-10 12:00:00", minutes=0.5, distance=None),
+        trip("2025-01-10 12:00:00", minutes=0.5, distance=math.nan),
     ],
     "distance_too_long": [trip("2025-01-10 12:00:00", distance=150.0)],
 }
@@ -80,7 +93,8 @@ def test_panel_is_complete_and_keeps_every_trip(spark, january):
     assert len(panel) == len(ZONES) * 744
     assert not panel.duplicated(["zone_id", "hour_utc"]).any()
     assert panel.pickups.sum() == len(VALID_JANUARY)
-    assert (panel.loc[panel.zone_id == 3, "pickups"] == 0).all()
+    assert panel.loc[panel.zone_id == 3, "pickups"].sum() == 3  # the three kept edge cases
+    assert (panel.loc[panel.zone_id == 4, "pickups"] == 0).all()
     assert report["panel"]["zones_without_pickups"] == 1
     assert sum(report["pickups_by_local_hour"]) == len(VALID_JANUARY)
 
@@ -142,12 +156,53 @@ def test_run_writes_quality_reports_that_render_as_markdown(spark, january):
 
     report = json.loads(quality_report_file(january, 2025, 1).read_text())
     assert report["month"] == "2025-01"
+    assert report["rules_version"] == RULES_VERSION
     markdown = render_markdown(load_reports(january / "quality"))
     assert "| 2025-01 |" in markdown
     assert "**Total**" in markdown
+
+
+def test_reports_from_different_rule_versions_are_not_mixed(spark, january):
+    write_zone_lookup(january / "raw" / "taxi_zone_lookup.csv", [*ZONES, 264, 265])
+    run([(2025, 1)], CONFIG, january, spark)
+    old = json.loads(quality_report_file(january, 2025, 1).read_text())
+    old.pop("rules_version")
+    old["month"] = "2024-12"
+    quality_report_file(january, 2024, 12).write_text(json.dumps(old))
+
+    with pytest.raises(ValueError, match="different rule versions"):
+        render_markdown(load_reports(january / "quality"))
 
 
 def test_zone_ids_exclude_unknown_zones(tmp_path):
     lookup = write_zone_lookup(tmp_path / "zones.csv", [1, 2, 264, 265])
 
     assert read_zone_ids(lookup, (264, 265)) == [1, 2]
+
+
+def test_nanosecond_timestamps_are_converted_before_spark_reads_them(spark, tmp_path):
+    rows = [trip("2025-01-15 08:30:00", zone=1), trip("2025-01-15 09:30:00", zone=2)]
+    path = write_trips(raw_trip_file(tmp_path, 2025, 1), rows)
+    table = pq.read_table(path)
+    for name in ("tpep_pickup_datetime", "tpep_dropoff_datetime"):
+        column = table.column(name).cast(pa.timestamp("ns"))
+        table = table.set_column(table.schema.get_field_index(name), name, column)
+    pq.write_table(table, path)
+    assert nanosecond_timestamp_columns(path) == ["tpep_pickup_datetime", "tpep_dropoff_datetime"]
+
+    report = process_month(spark, 2025, 1, CONFIG, tmp_path, ZONES)
+
+    assert report["rows_kept"] == 2
+    assert not list((tmp_path / "interim").glob("*.parquet"))  # temporary copy removed
+
+
+def test_up_to_date_months_are_skipped(spark, january):
+    write_zone_lookup(january / "raw" / "taxi_zone_lookup.csv", [*ZONES, 264, 265])
+    assert not is_up_to_date(january, 2025, 1)
+
+    run([(2025, 1)], CONFIG, january, spark)
+    assert is_up_to_date(january, 2025, 1)
+    assert run([(2025, 1)], CONFIG, january, spark, skip_up_to_date=True) == []
+
+    write_trips(raw_trip_file(january, 2025, 1), VALID_JANUARY)  # the TLC republished it
+    assert not is_up_to_date(january, 2025, 1)

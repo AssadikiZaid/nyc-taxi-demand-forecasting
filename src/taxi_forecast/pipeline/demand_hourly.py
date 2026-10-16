@@ -16,6 +16,7 @@ zone and hour, and it contains exactly as many pickups as trips kept.
 Usage::
 
     python -m taxi_forecast.pipeline.demand_hourly --start 2025-01 --end 2025-03
+    python -m taxi_forecast.pipeline.demand_hourly --skip-up-to-date   # only new months
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pyspark import StorageLevel
 from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as F  # noqa: N812 (PySpark convention)
@@ -53,19 +56,30 @@ logger = logging.getLogger(__name__)
 PICKUP = "tpep_pickup_datetime"
 DROPOFF = "tpep_dropoff_datetime"
 ZONE = "PULocationID"
+DROPOFF_ZONE = "DOLocationID"
+VENDOR = "VendorID"
 DISTANCE = "trip_distance"
+FARE = "fare_amount"
 
 # Quality rules in the order they are applied. A trip is counted under the first rule it
-# breaks only, so the counts add up to the number of trips removed.
+# breaks only, so the counts add up to the number of trips removed. The goal is to count
+# every pickup that happened exactly once; see docs/decisions.md (D-011, D-013).
 REJECT_REASONS = (
     "exact_duplicate",
     "pickup_outside_month",
     "invalid_zone",
-    "non_positive_duration",
+    "reversal_record",
+    "negative_duration",
     "duration_too_long",
-    "non_positive_distance",
+    "no_ride",
     "distance_too_long",
 )
+
+# Bumped whenever the rules change, so a quality report always says which rules made it.
+RULES_VERSION = 2
+
+# Columns that identify one trip when looking for its reversal record.
+_TRIP_KEY = (VENDOR, PICKUP, DROPOFF, ZONE, DROPOFF_ZONE)
 
 
 class PanelCheckError(RuntimeError):
@@ -104,13 +118,31 @@ def flag_trips(
 
     The output has three columns: ``local_hour`` (wall-clock hour of the pickup, without time
     zone), ``zone_id`` and ``reject_reason`` (``null`` for a trip that passes every rule).
-    Missing or NaN distances are counted as ``non_positive_distance``.
+
+    A trip is counted when a pickup happened, so the dropoff time and the fare only matter
+    as evidence: a dropoff equal to the pickup (some vendors never record it) is kept when
+    the taxi moved, and a trip that did not move is kept when it lasted at least
+    ``cleaning.min_ride_seconds``. A negative fare is a reversal only when the same trip
+    also appears with the opposite fare; on its own it is kept.
     """
+    fare_cents = F.round(F.abs(F.col(FARE).cast("double")) * 100).cast("long")
+    positive_fares = (
+        trips.where(F.col(FARE) > 0)
+        .select(*_TRIP_KEY, fare_cents.alias("fare_cents"))
+        .distinct()
+        .withColumn("has_positive_twin", F.lit(True))
+    )
+    trips = trips.withColumn("fare_cents", fare_cents).join(
+        positive_fares, [*_TRIP_KEY, "fare_cents"], "left"
+    )
+
     pickup = F.col(PICKUP).cast("timestamp_ntz")
     dropoff = F.col(DROPOFF).cast("timestamp_ntz")
     duration = _epoch_seconds(dropoff) - _epoch_seconds(pickup)
     distance = F.col(DISTANCE).cast("double")
     zone = F.col(ZONE).cast("int")
+    no_distance = distance.isNull() | F.isnan(distance) | (distance <= 0)
+    too_short = duration.isNull() | (duration < cleaning.min_ride_seconds)
 
     reason = (
         F.when(
@@ -120,9 +152,10 @@ def flag_trips(
             "pickup_outside_month",
         )
         .when(zone.isNull() | ~zone.isin(zone_ids), "invalid_zone")
-        .when(dropoff.isNull() | (duration <= 0), "non_positive_duration")
+        .when((F.col(FARE) < 0) & F.col("has_positive_twin").isNotNull(), "reversal_record")
+        .when(duration < 0, "negative_duration")
         .when(duration > cleaning.max_duration_hours * 3600, "duration_too_long")
-        .when(distance.isNull() | F.isnan(distance) | (distance <= 0), "non_positive_distance")
+        .when(no_distance & too_short, "no_ride")
         .when(distance > cleaning.max_trip_distance_miles, "distance_too_long")
     )
     return trips.select(
@@ -200,6 +233,43 @@ def build_panel(
     )
 
 
+def nanosecond_timestamp_columns(path: Path) -> list[str]:
+    """Return the timestamp columns of a Parquet file stored with nanosecond precision.
+
+    Spark cannot read nanosecond Parquet timestamps, and some TLC files may use them. Only
+    the file footer is read.
+    """
+    return [
+        field.name
+        for field in pq.read_schema(path)
+        if pa.types.is_timestamp(field.type) and field.type.unit == "ns"
+    ]
+
+
+def read_trips(
+    spark: SparkSession, source: Path, scratch_dir: Path
+) -> tuple[DataFrame, Path | None]:
+    """Read a raw TLC file with Spark, converting nanosecond timestamps first if needed.
+
+    Returns the DataFrame and the temporary copy that was written (``None`` when the file
+    could be read as it is). The caller deletes the copy once the month is processed.
+    """
+    columns = nanosecond_timestamp_columns(source)
+    if not columns:
+        return spark.read.parquet(str(source)), None
+
+    logger.info("%s stores %s in nanoseconds: converting to microseconds", source.name, columns)
+    table = pq.read_table(source)
+    for name in columns:
+        position = table.schema.get_field_index(name)
+        converted = table.column(name).cast(pa.timestamp("us"), safe=False)
+        table = table.set_column(position, name, converted)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    copy = scratch_dir / source.name
+    pq.write_table(table, copy)
+    return spark.read.parquet(str(copy)), copy
+
+
 def process_month(
     spark: SparkSession,
     year: int,
@@ -213,7 +283,24 @@ def process_month(
     if not source.exists():
         raise FileNotFoundError(f"{source} is missing: download it first with `make data`")
 
-    raw = spark.read.parquet(str(source))
+    raw, scratch_copy = read_trips(spark, source, data_dir / "interim")
+    try:
+        return _process_trips(spark, raw, source, year, month, config, data_dir, zone_ids)
+    finally:
+        if scratch_copy is not None:
+            scratch_copy.unlink(missing_ok=True)
+
+
+def _process_trips(
+    spark: SparkSession,
+    raw: DataFrame,
+    source: Path,
+    year: int,
+    month: int,
+    config: ProjectConfig,
+    data_dir: Path,
+    zone_ids: list[int],
+) -> dict[str, Any]:
     rows_raw = raw.count()
     flagged = flag_trips(raw.dropDuplicates(), year, month, zone_ids, config.cleaning)
     flagged = flagged.persist(StorageLevel.MEMORY_AND_DISK)
@@ -269,13 +356,16 @@ def process_month(
     return {
         "month": f"{year}-{month:02d}",
         "source_file": source.name,
+        "source_bytes": source.stat().st_size,
         "rows_raw": rows_raw,
         "rejected": rejected,
         "rows_kept": rows_kept,
         "kept_share": rows_kept / rows_raw if rows_raw else 0.0,
+        "rules_version": RULES_VERSION,
         "thresholds": {
             "max_duration_hours": config.cleaning.max_duration_hours,
             "max_trip_distance_miles": config.cleaning.max_trip_distance_miles,
+            "min_ride_seconds": config.cleaning.min_ride_seconds,
         },
         "panel": {
             "zones": stats["zones"],
@@ -290,16 +380,43 @@ def process_month(
     }
 
 
+def is_up_to_date(data_dir: Path, year: int, month: int) -> bool:
+    """Tell whether a month was already built from the current raw file with the current rules.
+
+    That is the case when its quality report exists, was written by the current
+    ``RULES_VERSION`` and describes a raw file of the same size as the one on disk, and its
+    panel partition exists.
+    """
+    report_path = quality_report_file(data_dir, year, month)
+    source = raw_trip_file(data_dir, year, month)
+    partition = demand_hourly_dir(data_dir) / f"year={year}" / f"month={month}"
+    if not (report_path.exists() and source.exists() and partition.exists()):
+        return False
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    return (
+        report.get("rules_version") == RULES_VERSION
+        and report.get("source_bytes") == source.stat().st_size
+    )
+
+
 def run(
     months: list[tuple[int, int]],
     config: ProjectConfig,
     data_dir: Path,
     spark: SparkSession,
+    skip_up_to_date: bool = False,
 ) -> list[dict[str, Any]]:
-    """Process each month in turn and write its JSON quality report."""
+    """Process each month in turn and write its JSON quality report.
+
+    With ``skip_up_to_date``, months already built from the same raw file with the current
+    rules are skipped, so only new or changed months are processed.
+    """
     zone_ids = read_zone_ids(zone_lookup_file(data_dir), config.data.excluded_zone_ids)
     reports = []
     for year, month in months:
+        if skip_up_to_date and is_up_to_date(data_dir, year, month):
+            logger.info("%d-%02d: up to date, skipped", year, month)
+            continue
         report = process_month(spark, year, month, config, data_dir, zone_ids)
         path = quality_report_file(data_dir, year, month)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -325,13 +442,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--start", default=config.data.start_month, help="first month, YYYY-MM")
     parser.add_argument("--end", default=config.data.end_month, help="last month, YYYY-MM")
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
+    parser.add_argument(
+        "--skip-up-to-date",
+        action="store_true",
+        help="skip months already built from the same raw file with the current rules",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     spark = get_spark("demand-hourly")
     spark.sparkContext.setLogLevel("WARN")
     try:
-        run(month_range(args.start, args.end), config, args.data_dir, spark)
+        months = month_range(args.start, args.end)
+        run(months, config, args.data_dir, spark, skip_up_to_date=args.skip_up_to_date)
     finally:
         spark.stop()
 
