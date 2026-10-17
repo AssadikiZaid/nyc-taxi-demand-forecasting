@@ -25,6 +25,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,8 @@ RULES_VERSION = 2
 
 # Columns that identify one trip when looking for its reversal record.
 _TRIP_KEY = (VENDOR, PICKUP, DROPOFF, ZONE, DROPOFF_ZONE)
+# The only raw columns the rules read.
+_USED_COLUMNS = (*_TRIP_KEY, DISTANCE, FARE)
 
 
 class PanelCheckError(RuntimeError):
@@ -105,6 +108,22 @@ def _epoch_seconds(column: Column) -> Column:
     two such values are exact durations in wall-clock seconds.
     """
     return column.cast("timestamp").cast("long")
+
+
+def deduplicated_trips(raw: DataFrame) -> DataFrame:
+    """Return the columns the rules need, one row per distinct raw row.
+
+    Two rows are exact duplicates when every one of their columns is equal. Rather than
+    shuffling all the raw columns (about twenty) to find them, each row is reduced to a
+    64-bit hash of all its columns plus the few columns used afterwards; duplicates are
+    removed on that narrow row. This keeps the memory needed by the job small enough for a
+    laptop, at the cost of a collision probability that is negligible here (two different
+    rows would need identical used columns and the same 64-bit hash).
+    """
+    missing = sorted(set(_USED_COLUMNS) - set(raw.columns))
+    if missing:
+        raise ValueError(f"The raw file has no column {missing}: has the TLC schema changed?")
+    return raw.select(F.xxhash64(*raw.columns).alias("row_hash"), *_USED_COLUMNS).dropDuplicates()
 
 
 def flag_trips(
@@ -301,9 +320,12 @@ def _process_trips(
     data_dir: Path,
     zone_ids: list[int],
 ) -> dict[str, Any]:
-    rows_raw = raw.count()
-    flagged = flag_trips(raw.dropDuplicates(), year, month, zone_ids, config.cleaning)
+    rows_raw = raw.count()  # read from the Parquet footers, no scan
+    trips = deduplicated_trips(raw).persist(StorageLevel.MEMORY_AND_DISK)
+    flagged = flag_trips(trips, year, month, zone_ids, config.cleaning)
     flagged = flagged.persist(StorageLevel.MEMORY_AND_DISK)
+    flagged.count()  # materialize, so the raw trips can be released
+    trips.unpersist()
 
     reason_rows = flagged.groupBy("reject_reason").count().collect()
     by_reason = {row["reject_reason"]: row["count"] for row in reason_rows}
@@ -435,7 +457,7 @@ def run(
 
 def main(argv: list[str] | None = None) -> None:
     """Command-line entry point."""
-    from taxi_forecast.pipeline.spark import get_spark
+    from taxi_forecast.pipeline.spark import get_spark, total_memory_mb
 
     config = load_config()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -452,6 +474,12 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     spark = get_spark("demand-hourly")
     spark.sparkContext.setLogLevel("WARN")
+    logger.info(
+        "Spark driver memory %s, %s cores, %s MB of RAM visible",
+        spark.sparkContext.getConf().get("spark.driver.memory"),
+        os.cpu_count(),
+        total_memory_mb(),
+    )
     try:
         months = month_range(args.start, args.end)
         run(months, config, args.data_dir, spark, skip_up_to_date=args.skip_up_to_date)

@@ -162,3 +162,17 @@ microseconds in a temporary copy first.
 **Why.** The monthly Airflow DAG (phase 8) only needs to process the newly published month,
 and an interrupted run over 44 months can resume where it stopped. A rules change bumps the
 version, which forces a rebuild of every month, so the panel never mixes two versions.
+
+## D-015 · A Spark job sized for a laptop
+
+**Context.** On an 8 GB Windows laptop, WSL2 sees about half of the RAM. The first full
+run took 20 minutes for one month, against about one minute on a machine with more memory:
+the JVM's 3 GB heap pushed the VM into swap.
+
+**Decision.** Exact duplicates are found on a 64-bit hash of all the raw columns plus the
+seven columns the rules use, instead of shuffling all twenty columns, and the narrow rows
+are cached once. The driver memory defaults to 40 % of the visible RAM, between 1 and 3 GB
+(`SPARK_DRIVER_MEMORY` overrides it), and the job logs the memory it uses.
+
+**Result.** On January 2023, peak memory falls from 3.2 GB to 1.6 GB with a 1 GB driver,
+the run takes 44 seconds instead of 63 on the same machine, and the counts are identical.

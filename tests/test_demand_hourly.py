@@ -206,3 +206,22 @@ def test_up_to_date_months_are_skipped(spark, january):
 
     write_trips(raw_trip_file(january, 2025, 1), VALID_JANUARY)  # the TLC republished it
     assert not is_up_to_date(january, 2025, 1)
+
+
+def test_rows_differing_only_in_an_unused_column_are_not_duplicates(spark, tmp_path):
+    first = trip("2025-01-15 08:30:00", zone=1, fare=10.0)
+    second = dict(first, passenger_count=3)  # same trip fields, another passenger count
+    write_trips(raw_trip_file(tmp_path, 2025, 1), [first, second, first])
+
+    report = process_month(spark, 2025, 1, CONFIG, tmp_path, ZONES)
+
+    assert report["rejected"]["exact_duplicate"] == 1
+    assert report["rows_kept"] == 2
+
+
+def test_a_missing_column_gives_a_clear_error(spark, tmp_path):
+    path = write_trips(raw_trip_file(tmp_path, 2025, 1), [trip("2025-01-15 08:30:00")])
+    pq.write_table(pq.read_table(path).drop_columns(["fare_amount"]), path)
+
+    with pytest.raises(ValueError, match="fare_amount"):
+        process_month(spark, 2025, 1, CONFIG, tmp_path, ZONES)
