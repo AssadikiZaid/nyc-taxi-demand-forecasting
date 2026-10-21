@@ -137,6 +137,24 @@ def test_fall_back_month_splits_the_repeated_hour(spark, tmp_path):
     assert pickups_at(panel, 2, datetime(2025, 11, 2, 6)) == 1  # second 01:xx (EST)
 
 
+def test_trip_crossing_the_fall_back_is_kept(spark, tmp_path):
+    trips = [
+        # Picked up at 01:50 EDT, dropped off 20 minutes later at 01:10 EST: a real trip.
+        trip("2025-11-02 01:50:00", dropoff="2025-11-02 01:10:00", zone=1),
+        # The same wall-clock times on another day are a clock error.
+        trip("2025-11-05 01:50:00", dropoff="2025-11-05 01:10:00", zone=1),
+        # Did not move and lasted 30 seconds once corrected: still no ride.
+        trip("2025-11-02 01:59:50", dropoff="2025-11-02 01:00:20", zone=1, distance=0.0),
+    ]
+    write_trips(raw_trip_file(tmp_path, 2025, 11), trips)
+
+    report = process_month(spark, 2025, 11, CONFIG, tmp_path, ZONES)
+
+    assert report["rows_kept"] == 1
+    assert report["rejected"]["negative_duration"] == 1
+    assert report["rejected"]["no_ride"] == 1
+
+
 def test_rerunning_a_month_replaces_it_instead_of_appending(spark, january):
     process_month(spark, 2025, 1, CONFIG, january, ZONES)
     process_month(spark, 2025, 1, CONFIG, january, ZONES)

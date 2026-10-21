@@ -176,3 +176,21 @@ are cached once. The driver memory defaults to 40 % of the visible RAM, between 
 
 **Result.** On January 2023, peak memory falls from 3.2 GB to 1.6 GB with a 1 GB driver,
 the run takes 44 seconds instead of 63 on the same machine, and the counts are identical.
+
+## D-016 · Trips that cross the fall-back hour (rules version 3)
+
+**Context.** Over the 44 months, the "negative duration" rule removed fewer than 50 trips a
+month, except in November: 783, 1,066 and 1,423 in 2023, 2024 and 2025. In November 2025,
+1,430 of them were picked up and dropped off between 01:00 and 01:59 on 2 November, the
+night clocks fall back, with a median distance of 3.75 miles and a positive fare for 93 %.
+They are real trips picked up during the first 01:00-01:59 (EDT) and dropped off during the
+second one (EST), so their wall-clock dropoff looks earlier than their pickup. Version 2
+removed 12 % of the trips picked up in that hour.
+
+**Decision.** When both timestamps fall in the repeated hour and the dropoff looks earlier,
+the duration is corrected by one hour instead of the trip being treated as a clock error.
+The same wall-clock times on any other night are still clock errors.
+
+**Result.** In November 2025, negative durations fall from 1,423 to 4 and the two UTC hours
+of the repeated 01:00 hold 5,730 and 5,626 pickups, between their neighbours (9,657 and
+3,777).

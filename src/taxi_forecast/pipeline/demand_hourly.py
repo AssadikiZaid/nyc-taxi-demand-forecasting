@@ -46,6 +46,7 @@ from taxi_forecast.paths import (
     zone_lookup_file,
 )
 from taxi_forecast.pipeline.hours import (
+    ONE_HOUR,
     local_hour_mapping,
     month_start,
     next_month_start,
@@ -77,7 +78,7 @@ REJECT_REASONS = (
 )
 
 # Bumped whenever the rules change, so a quality report always says which rules made it.
-RULES_VERSION = 2
+RULES_VERSION = 3
 
 # Columns that identify one trip when looking for its reversal record.
 _TRIP_KEY = (VENDOR, PICKUP, DROPOFF, ZONE, DROPOFF_ZONE)
@@ -132,6 +133,7 @@ def flag_trips(
     month: int,
     zone_ids: list[int],
     cleaning: CleaningConfig,
+    timezone: str,
 ) -> DataFrame:
     """Return the pickup hour, the zone and the first broken rule of each trip.
 
@@ -143,6 +145,10 @@ def flag_trips(
     the taxi moved, and a trip that did not move is kept when it lasted at least
     ``cleaning.min_ride_seconds``. A negative fare is a reversal only when the same trip
     also appears with the opposite fare; on its own it is kept.
+
+    When clocks fall back, a trip picked up during the first 01:00-01:59 and dropped off
+    during the second one has a dropoff that looks earlier than its pickup. Such trips are
+    real: their duration is corrected by one hour instead of being treated as clock errors.
     """
     fare_cents = F.round(F.abs(F.col(FARE).cast("double")) * 100).cast("long")
     positive_fares = (
@@ -157,7 +163,15 @@ def flag_trips(
 
     pickup = F.col(PICKUP).cast("timestamp_ntz")
     dropoff = F.col(DROPOFF).cast("timestamp_ntz")
-    duration = _epoch_seconds(dropoff) - _epoch_seconds(pickup)
+    wall_clock_duration = _epoch_seconds(dropoff) - _epoch_seconds(pickup)
+    in_repeated_hour = F.lit(False)
+    for hour in _repeated_local_hours(year, month, timezone):
+        start, end = _ntz_literal(hour), _ntz_literal(hour + ONE_HOUR)
+        in_repeated_hour = in_repeated_hour | (
+            (pickup >= start) & (pickup < end) & (dropoff >= start) & (dropoff < end)
+        )
+    crosses_fall_back = in_repeated_hour & (wall_clock_duration < 0)
+    duration = F.when(crosses_fall_back, wall_clock_duration + 3600).otherwise(wall_clock_duration)
     distance = F.col(DISTANCE).cast("double")
     zone = F.col(ZONE).cast("int")
     no_distance = distance.isNull() | F.isnan(distance) | (distance <= 0)
@@ -181,6 +195,13 @@ def flag_trips(
         F.date_trunc("hour", pickup).cast("timestamp_ntz").alias("local_hour"),
         zone.alias("zone_id"),
         reason.alias("reject_reason"),
+    )
+
+
+def _repeated_local_hours(year: int, month: int, timezone: str) -> list[datetime]:
+    """Return the wall-clock hours that happen twice in the month (when clocks fall back)."""
+    return sorted(
+        {m.local_hour for m in local_hour_mapping(year, month, timezone) if m.n_shares == 2}
     )
 
 
@@ -322,7 +343,7 @@ def _process_trips(
 ) -> dict[str, Any]:
     rows_raw = raw.count()  # read from the Parquet footers, no scan
     trips = deduplicated_trips(raw).persist(StorageLevel.MEMORY_AND_DISK)
-    flagged = flag_trips(trips, year, month, zone_ids, config.cleaning)
+    flagged = flag_trips(trips, year, month, zone_ids, config.cleaning, config.data.timezone)
     flagged = flagged.persist(StorageLevel.MEMORY_AND_DISK)
     flagged.count()  # materialize, so the raw trips can be released
     trips.unpersist()

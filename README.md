@@ -71,9 +71,11 @@ make pipeline START=2023-01 END=2026-08    # the full period
 [docs/data_quality.md](docs/data_quality.md).
 
 The cleaning rules, the time-zone handling and the checks run on every month are explained
-in [docs/decisions.md](docs/decisions.md) (D-009 to D-014): the rules were revised after
-checking the real data, which showed one vendor never recording dropoff times and some
-trips appearing twice through reversal records. Data files stay out of git; set
+in [docs/decisions.md](docs/decisions.md) (D-009 to D-016): the rules were revised after
+checking the real data, which showed one vendor never recording dropoff times, some
+trips appearing twice through reversal records and real trips crossing the fall-back
+hour. Facts about the data worth knowing before modeling are in
+[docs/data_notes.md](docs/data_notes.md). Data files stay out of git; set
 `TAXI_FORECAST_DATA_DIR` to keep them on another drive.
 
 ## Repository layout
