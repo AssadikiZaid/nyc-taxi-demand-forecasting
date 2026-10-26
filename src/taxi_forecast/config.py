@@ -89,6 +89,7 @@ class WeatherConfig:
     """Weather source and the hourly variables requested from it."""
 
     provider: str
+    archive_url: str
     latitude: float
     longitude: float
     hourly_variables: tuple[str, ...]

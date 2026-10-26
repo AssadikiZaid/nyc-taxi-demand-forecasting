@@ -16,8 +16,11 @@ cleaning:
   max_trip_distance_miles: 100
   min_ride_seconds: 60     # a trip that did not move must last at least this long to count
 
+# Hourly observed weather (phase 2): Open-Meteo historical API, reanalysis data (ERA5 family),
+# free for non-commercial use under CC BY 4.0. Units: degrees C, mm, cm of snow, km/h.
 weather:
   provider: "open-meteo"
+  archive_url: "https://archive-api.open-meteo.com/v1/archive"
   latitude: 40.78    # Central Park
   longitude: -73.97
   hourly_variables:
