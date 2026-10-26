@@ -63,7 +63,13 @@ class FakeGitHub:
         if args[0] == "api" and "milestones?" in args[1]:
             return json.dumps([{"title": "Sprint 1"}])
         if args[:2] == ("project", "list"):
-            return json.dumps({"projects": [{"title": backlog.PROJECT_TITLE, "number": 3}]})
+            projects = [{"title": backlog.PROJECT_TITLE, "number": 3, "id": "PVT_1"}]
+            return json.dumps({"projects": projects})
+        if args[:2] == ("project", "field-list"):
+            status = {"name": "Status", "id": "F_1", "options": [{"name": "Todo", "id": "O_1"}]}
+            return json.dumps({"fields": [{"name": "Title", "id": "F_0"}, status]})
+        if args[:2] == ("project", "item-add"):
+            return json.dumps({"id": "ITEM_9"})
         if args[:2] == ("issue", "list"):
             return json.dumps(self.existing)
         if args[:2] == ("issue", "create"):
@@ -82,15 +88,21 @@ def test_sync_creates_only_missing_issues(tmp_path):
     assert len(created) == 1
     assert "S1-02 · Set up the board" in created[0]
     added = [call for call in gh.calls if call[:2] == ("project", "item-add")]
-    assert added == [
+    assert len(added) == 1
+    assert "https://github.com/me/repo/issues/9" in added[0]
+    edited = [call for call in gh.calls if call[:2] == ("project", "item-edit")]
+    assert edited == [
         (
             "project",
-            "item-add",
-            "3",
-            "--owner",
-            "me",
-            "--url",
-            "https://github.com/me/repo/issues/9",
+            "item-edit",
+            "--id",
+            "ITEM_9",
+            "--project-id",
+            "PVT_1",
+            "--field-id",
+            "F_1",
+            "--single-select-option-id",
+            "O_1",
         )
     ]
     assert not [call for call in gh.calls if call[:2] == ("project", "create")]

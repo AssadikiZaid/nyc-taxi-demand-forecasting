@@ -157,6 +157,7 @@ def sync(backlog: Path, gh: GitHub) -> None:
         except RuntimeError as error:  # older gh versions have no `project link`
             print(f"  could not link the project to the repository: {error}")
     number = str(project["number"]) if project else "<new project>"
+    todo = _todo_option(gh, number, owner)  # new cards go to the "Todo" column
 
     existing = json.loads(
         gh.run(
@@ -188,8 +189,48 @@ def sync(backlog: Path, gh: GitHub) -> None:
             sprint,
             *label_args,
         ).strip()
-        gh.run("project", "item-add", number, "--owner", owner, "--url", url or "<issue url>")
+        added = gh.run(
+            "project",
+            "item-add",
+            number,
+            "--owner",
+            owner,
+            "--url",
+            url or "<issue url>",
+            "--format",
+            "json",
+        )
+        if added and todo is not None:
+            gh.run(
+                "project",
+                "item-edit",
+                "--id",
+                json.loads(added)["id"],
+                "--project-id",
+                project["id"],
+                "--field-id",
+                todo[0],
+                "--single-select-option-id",
+                todo[1],
+            )
         print(f"  {task.key} created: {url}")
+
+
+def _todo_option(gh: GitHub, number: str, owner: str) -> tuple[str, str] | None:
+    """Return the ids of the project's Status field and of its "Todo" option, if any."""
+    if gh.dry_run and number == "<new project>":
+        return None
+    fields = json.loads(
+        gh.run(
+            "project", "field-list", number, "--owner", owner, "--format", "json", read_only=True
+        )
+    )
+    for field in fields.get("fields", []):
+        if field.get("name") == "Status":
+            for option in field.get("options", []):
+                if option.get("name") == "Todo":
+                    return field["id"], option["id"]
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
