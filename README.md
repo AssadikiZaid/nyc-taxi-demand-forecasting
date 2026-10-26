@@ -26,7 +26,7 @@ Evidently.
 | --- | --- | --- |
 | 0 | Project setup: tooling, tests, CI | Done |
 | 1 | Ingestion and PySpark pipeline: complete zone x hour panel | In progress |
-| 2 | Weather and calendar enrichment, exploratory analysis | Not started |
+| 2 | Weather and calendar enrichment, exploratory analysis | In progress |
 | 3 | Rolling-origin backtest, metrics, MLflow tracking, seasonal baseline | Not started |
 | 4 | Global LightGBM with lag features and quantile objectives | Not started |
 | 5 | Prophet and TFT on the same folds | Not started |
@@ -58,20 +58,25 @@ make pipeline                              # January to March 2025, the developm
 make pipeline START=2023-01 END=2026-08    # the full period
 ```
 
-`make pipeline` runs two steps, which can also be called one by one:
+`make pipeline` runs five steps, which can also be called one by one:
 
 1. `make data` downloads the monthly TLC files and the taxi zone table. Files already on
    disk are skipped, so the command can be re-run safely.
-2. `make panel` builds, with PySpark, the hourly number of pickups for every taxi zone and
+2. `make weather` downloads the hourly weather at Central Park from the Open-Meteo archive,
+   one file per month; complete months are skipped.
+3. `make panel` builds, with PySpark, the hourly number of pickups for every taxi zone and
    every UTC hour, with explicit zeros, in `data/processed/demand_hourly/`. Each month also
    gets a JSON quality report in `data/quality/`. Months already built with the current
    rules are skipped; `make panel FORCE=1` rebuilds them.
+4. `make calendar` builds the hourly calendar (holidays, weekdays, clock changes).
+5. `make base-table` joins demand, weather and calendar into
+   `data/processed/base_hourly/`, one row per zone and hour.
 
 `make quality-report` then summarizes the monthly reports in
 [docs/data_quality.md](docs/data_quality.md).
 
 The cleaning rules, the time-zone handling and the checks run on every month are explained
-in [docs/decisions.md](docs/decisions.md) (D-009 to D-016): the rules were revised after
+in [docs/decisions.md](docs/decisions.md) (D-009 to D-019): the rules were revised after
 checking the real data, which showed one vendor never recording dropoff times, some
 trips appearing twice through reversal records and real trips crossing the fall-back
 hour. Facts about the data worth knowing before modeling are in

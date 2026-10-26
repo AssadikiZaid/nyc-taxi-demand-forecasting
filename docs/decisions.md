@@ -194,3 +194,42 @@ The same wall-clock times on any other night are still clock errors.
 **Result.** In November 2025, negative durations fall from 1,423 to 4 and the two UTC hours
 of the repeated 01:00 hold 5,730 and 5,626 pickups, between their neighbours (9,657 and
 3,777).
+
+## D-017 · Weather: one point, from a reanalysis archive
+
+**Decision.** Hourly weather comes from the Open-Meteo historical archive for one point,
+Central Park: temperature, precipitation, rain, snowfall, wind speed and weather code. It
+is stored per New York calendar month with every UTC hour, like the panel, and the same
+values are used for every taxi zone.
+
+**Why.** The busiest zones lie within a few kilometres of Central Park, and rain or snow
+affect the whole city at once; per-zone weather would add little for much more data. The
+archive is a reanalysis (a model fitted to observations), not a station record: it has no
+gaps, which a station often has. It lags real time by a few days, so a month is only
+written once every hour is available.
+
+**Limit.** Using observed weather when scoring a forecast assumes the weather was known in
+advance. The backlog item S1-15 replaces it with the forecast issued the day before, for
+the test period, to measure the cost of that assumption.
+
+## D-018 · Calendar facts, not encodings
+
+**Decision.** The calendar table stores facts per UTC hour: New York date and hour,
+weekday, US federal holidays with their observed days, the day before and after each one,
+New York State holidays apart, UTC offset and clock-change days. Encodings (cyclical hours,
+one-hot weekdays) are left to each model.
+
+**Why.** Federal holidays close offices and change commuting; New York State holidays
+such as Lincoln's Birthday mostly do not, so mixing them would blur the signal. Every
+column is known in advance, so the table is built one month past the last month of trips
+and covers the hours being forecast.
+
+## D-019 · Base table built with pandas, without lag features
+
+**Decision.** The base table joins panel, weather and calendar month by month with
+pandas, one partition per month. It holds no lag or rolling features.
+
+**Why.** A month is about 195,000 rows: pandas joins it in a fraction of a second, less
+than Spark takes to start. Lag features depend on the forecast origin (only data before
+it may be used), so they are computed inside the backtest, where the leakage test can
+check them, instead of being stored once for all origins.
